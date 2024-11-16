@@ -1,7 +1,10 @@
 pub mod message_list;
 pub mod message;
 
-use gpui::{div, list, rgb, AppContext, Context, IntoElement, ListAlignment, ListState, Model, ParentElement, Pixels, Render, Styled, View, VisualContext};
+use std::ops::Deref;
+
+use components::input::{InputEvent, TextInput};
+use gpui::{div, list, rgb, AppContext, Context, IntoElement, ListAlignment, ListState, Model, ParentElement, Pixels, Render, SharedString, Styled, View, VisualContext};
 use message::message;
 use message_list::MessageList;
 use scope_backend_discord::message::DiscordMessage;
@@ -9,7 +12,8 @@ use scope_chat::{channel::Channel, message::Message};
 
 pub struct ChannelView<M: Message + 'static> {
   list_state: ListState,
-  list_model: Model<MessageList<M>>
+  list_model: Model<MessageList<M>>,
+  message_input: View<TextInput>,
 }
 
 impl<M: Message + 'static> ChannelView<M> {
@@ -19,10 +23,11 @@ impl<M: Message + 'static> ChannelView<M> {
   
       let async_model = state_model.clone();
       let mut async_ctx = ctx.to_async();
+      let channel_listener = channel.clone();
 
       ctx.foreground_executor().spawn(async move {
         loop {
-          let message = channel.get_receiver().recv().await.unwrap();
+          let message = channel_listener.get_receiver().recv().await.unwrap();
 
           println!("Got Message!");
 
@@ -50,6 +55,34 @@ impl<M: Message + 'static> ChannelView<M> {
       }).detach();
   
       let items = state_model.read(ctx).messages.clone();
+
+      let message_input = ctx.new_view(|cx| {
+        let mut input = components::input::TextInput::new(cx);
+  
+        input.set_size(components::Size::Large, cx);
+  
+        input
+      });
+
+      ctx.subscribe(&message_input, move |channel_view, text_input, input_event, ctx| {
+        match input_event {
+          InputEvent::PressEnter => {
+            let content = text_input.read(ctx).text().to_string();
+            let channel_sender = channel.clone();
+
+            text_input.update(ctx, |text_input, cx| {
+              text_input.set_text("", cx);
+            });
+
+            ctx.foreground_executor().spawn(async move {
+              let nonce = random_string::generate(20, random_string::charsets::ALPHANUMERIC);
+
+              channel_sender.send_message(content, nonce).await;
+            }).detach();
+          }
+          _ => {}
+        }
+      }).detach();  
   
       ChannelView::<M> {
         list_state: ListState::new(items.len(), ListAlignment::Bottom, Pixels(20.), move |idx, _cx| {
@@ -57,6 +90,7 @@ impl<M: Message + 'static> ChannelView<M> {
           div().child(message(item)).into_any_element()
         }),
         list_model: state_model,
+        message_input,
       }
     });
 
@@ -72,6 +106,6 @@ impl<M: Message + 'static> Render for ChannelView<M> {
       .w_full()
       .h_full()
       .child(list(self.list_state.clone()).w_full().h_full())
-      .child(div().flex().h_24().bg(rgb(0xFF0000)))
+      .child(self.message_input.clone())
   }
 }
